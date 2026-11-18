@@ -9,6 +9,20 @@ from add_localtime import add_localtime
 
 FID = "flight_id"
 
+def read_parquet_days(fname, days=None):
+    '''
+    Koopmann-Aziz: pd.read_parquet(fname), optionally restricted to the day files
+    <fname>/<day>.parquet of the list @days (smoke runs). days=None: original behaviour.
+    '''
+    if days is None or not os.path.isdir(fname):
+        return pd.read_parquet(fname)
+    files = [os.path.join(fname, f"{d}.parquet") for d in days]
+    files = [f for f in files if os.path.exists(f)]
+    if not files:
+        raise FileNotFoundError(f"none of the days {days} in {fname}")
+    return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+
+
 def sortedout(method):
     ''' decorator to sort features'''
     @wraps(method)
@@ -26,10 +40,10 @@ class AllNumeric:
     It was tested but it was not conclusive.
     Nonetheless, the idea is interesting, so the code is left as is for future tests.
     '''
-    def __init__(self, fname):
+    def __init__(self, fname, days=None):
         super().__init__()
         self.fname = fname
-        self.data = pd.read_parquet(fname)
+        self.data = read_parquet_days(fname, days)
     @sortedout
     def categorical_features(self):
         return []
@@ -45,10 +59,10 @@ class AllNumericNotScaled:
     '''
     From a dataframe file @fname use all its column, except flight_id, as numerical feature
     '''
-    def __init__(self, fname):
+    def __init__(self, fname, days=None):
         super().__init__()
         self.fname = fname
-        self.data = pd.read_parquet(fname)
+        self.data = read_parquet_days(fname, days)
     @sortedout
     def categorical_features(self):
         return []
@@ -63,10 +77,10 @@ class AllCategorical:
     '''
     From a dataframe file @fname use all its column, except flight_id, as categorical feature
     '''
-    def __init__(self, fname):
+    def __init__(self, fname, days=None):
         super().__init__()
         self.fname = fname
-        self.data = pd.read_parquet(fname)
+        self.data = read_parquet_days(fname, days)
     @sortedout
     def categorical_features(self):
         return sorted([x for x in self.data if x!=FID])
@@ -126,8 +140,8 @@ class Cruise(AllNumeric):
     '''
     Class used to model the features related to the cruise files
     '''
-    def __init__(self,fname):
-        super().__init__(fname)
+    def __init__(self,fname,days=None):
+        super().__init__(fname,days)
         prefix = "CruiseDeltaAlt_"
         nb = max(int(x[len(prefix):])  for x in list(self.data) if x.startswith(prefix))+1
         print(nb)
@@ -147,8 +161,8 @@ class Mass(AllNumeric):
     '''
     Class used to model the features related to the climbing files
     '''
-    def __init__(self,norange,scale,fname):
-        super().__init__(fname)
+    def __init__(self,norange,scale,fname,days=None):
+        super().__init__(fname,days)
         if "index" in list(self.data):
             self.data=self.data.drop(columns="index")
         if scale:
@@ -182,21 +196,25 @@ class Union:
     def numeric_features(self):
         return [y for x in self.lfeatures for y in  x.numeric_features()] + self.flights.numeric_features()
 
-def read_features(what):
+def read_features(what, days=None):
     '''
     Return a Union object used to assemble all the features
     It contains a dataframe of the features
     And the names of the categorical/numerical features
+    Koopmann-Aziz: @days (list of 'YYYY-MM-DD') restricts to those day files and to
+    flights with that 'date' (smoke runs only); days=None is the original behaviour.
     '''
     config = utils.read_config()
     lfeatures = [
-        Mass(norange=True,scale=True,fname=os.path.join(config.FOLDER_DATA,f"classic__1e-2__5_500_40_daltitude_1_-0.5_1_masses/{what}")),
-        AllNumericNotScaled(os.path.join(config.FOLDER_DATA,f"thunder/{what}.parquet")),
-        AllNumericNotScaled(os.path.join(config.FOLDER_DATA,f"classic__1e-2_wind/{what}")),
-        Cruise(os.path.join(config.FOLDER_DATA,f"classic__1e-2__20_cruise/{what}")),
+        Mass(norange=True,scale=True,fname=os.path.join(config.FOLDER_DATA,f"classic__1e-2__5_500_40_daltitude_1_-0.5_1_masses/{what}"),days=days),
+        AllNumericNotScaled(os.path.join(config.FOLDER_DATA,f"thunder/{what}.parquet"),days=days),
+        AllNumericNotScaled(os.path.join(config.FOLDER_DATA,f"classic__1e-2_wind/{what}"),days=days),
+        Cruise(os.path.join(config.FOLDER_DATA,f"classic__1e-2__20_cruise/{what}"),days=days),
     ]
     flights = Flights(config, what)
     feat = Union(flights, lfeatures)
+    if days is not None:
+        feat.data = feat.data[feat.data["date"].dt.strftime("%Y-%m-%d").isin(days)]
     print(f"{feat.data.shape=}")
     feat.data=feat.data.query("aircraft_type!='C56X'").query("aircraft_type!='A310'")#.reset_index()
     print(f"{feat.data.shape=}")

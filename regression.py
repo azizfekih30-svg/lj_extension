@@ -22,6 +22,7 @@ import time
 import itertools
 import tqdm
 from argparse import Namespace
+import json
 
 YVAR = "tow"
 
@@ -160,6 +161,83 @@ def submit(predictor, dftest, config):
     dfsubpred = assemble_sub(dftest, ysub)
     utils.write_submission(config, dfsubpred)
 
+EXT_MODES = ("val", "final")
+
+
+def run_ext(args, model_params, config):
+    '''
+    Koopmann-Aziz extension modes (outputs only below EXT_FOLDER, named by variant/device/bins/seed):
+      -what val   : train on challenge_set minus the held-out days of @split_file,
+                    report the validation RMSE, write validation predictions
+      -what final : train on the full challenge_set, predict final_submission_set
+    The model, features and target scaling are exactly those of "-what submit".
+    '''
+    from koopmann_aziz import ext, split
+    timer = ext.Timer()
+    mon = ext.PeakRSS().start()
+    folders = ext.ext_folders(config)
+    val_days = split.load_val_days(args.split_file)
+    days = None
+    if args.smoke_days > 0:
+        days = ext.smoke_days(val_days, args.smoke_days, ext.available_days(config))
+    # smoke outputs get their own names so they can never be mistaken for real runs
+    name = ext.run_name(args.what, ("SMOKE-" if days else "") + args.variant, model_params)
+    info = {"name": name, "what": args.what, "variant": args.variant, "seed": model_params["random_state"],
+            "device": model_params.get("device"), "max_bin": model_params.get("max_bin"),
+            "n_estimators": model_params.get("n_estimators"), "model_params": model_params,
+            "split_file": os.path.relpath(args.split_file), "smoke_days": days, **ext.git_info()}
+    print("KA_START", info)
+    feat = features.read_features("challenge_set", days=days)
+    if args.what == "val":
+        isval = split.offblock_day(feat.data).isin(val_days).values
+        dfval = feat.data[isval]
+        feat.data = feat.data[~isval]
+        info.update(n_train=int((~isval).sum()), n_val=int(isval.sum()),
+                    n_val_days=int(split.offblock_day(dfval).nunique()))
+        print(f"KA_SPLIT train={info['n_train']} val={info['n_val']} val_days={info['n_val_days']}")
+        if info["n_val"] == 0 or info["n_train"] == 0:
+            raise SystemExit("empty training or validation part: check -split_file / -smoke_days")
+    predictor = Predictor(MassOewMtow(YVAR,"aircraft_type"),model_params)
+    predictor.fit(feat)
+    info["fit_s"] = predictor.log["elapsed_time"]
+    imp = pd.DataFrame(predictor.feature_importances(), columns=["gain", "feature"])
+    imp.to_csv(ext.guard_output(os.path.join(folders["scores"], f"{name}__importance.csv"), config), index=False)
+    if args.what == "val":
+        ypred = predictor.predict(dfval)
+        assert not np.isnan(ypred).any()
+        y = dfval[YVAR].values
+        info["val_rmse"] = float(root_mean_squared_error(y, ypred))
+        bytype = []
+        for ac in sorted(dfval.aircraft_type.unique()):
+            m = dfval.aircraft_type.values == ac
+            bytype.append((ac, int(m.sum()), float(root_mean_squared_error(y[m], ypred[m]))))
+        info["val_rmse_by_type"] = bytype
+        for ac, n, r in bytype:
+            print(f"val error |{ac:<10}|{n:>10}|{r:>10.0f}|")
+        out = pd.DataFrame({"flight_id": dfval.flight_id.values, "aircraft_type": dfval.aircraft_type.values,
+                            "day": split.offblock_day(dfval).values, "tow": y, "tow_pred": ypred})
+        fout = os.path.join(folders["preds"], f"{name}.csv")
+    else:
+        dftest = features.read_features("final_submission_set", days=days).data
+        # leakage guard: the test set must not carry labels, and the model never sees the column
+        if YVAR in dftest and dftest[YVAR].notna().any():
+            raise RuntimeError("final_submission_set has non-missing tow values: refusing to continue")
+        dftest = dftest.drop(columns=[YVAR], errors="ignore")
+        ysub = predictor.predict(dftest)
+        assert not np.isnan(ysub).any()
+        out = pd.DataFrame({"flight_id": dftest.flight_id.values, "tow": ysub})
+        fout = os.path.join(folders["submissions"], f"{name}.csv")
+        info["n_pred"] = len(out)
+    out.to_csv(ext.guard_output(fout, config), index=False)
+    info["output"] = fout
+    info["runtime_s"] = timer()
+    info["peak_ram_gb"] = mon.stop()
+    ext.write_json(info, os.path.join(folders["scores"], f"{name}.json"), config)
+    print("KA_RESULT", json.dumps({k: info.get(k) for k in
+          ["name", "val_rmse", "n_train", "n_val", "n_pred", "runtime_s", "fit_s", "peak_ram_gb", "output", "commit"]}))
+    return info
+
+
 def convert(v):
     try:
         return int(v)
@@ -177,6 +255,10 @@ def main():
     parser.add_argument("-what",default="valid")
     parser.add_argument("-log",default="log_file")
     parser.add_argument("-random_state",default=0,type=int)
+    # Koopmann-Aziz extension (only used by -what val / final)
+    parser.add_argument("-variant",default="baseline")
+    parser.add_argument("-split_file",default=os.path.join("koopmann_aziz","splits","val_days_seed0.txt"))
+    parser.add_argument("-smoke_days",default=0,type=int)
     args, unknown = parser.parse_known_args()
     unknown = {k[1:]:convert(v) for k,v in zip(unknown[:-1:2],unknown[1::2])}
     print(unknown)
@@ -187,7 +269,8 @@ def main():
         "submit":train_test,
     }
     config = utils.read_config()
-    feat, fdftest = dsplitter[args.what](args.random_state)
+    if args.what not in EXT_MODES:
+        feat, fdftest = dsplitter[args.what](args.random_state)
     print(args)
     model_params = {'boosting_type': 'gbdt', 'class_weight': None, 'colsample_bytree': 0.7368753029236468, 'importance_type': 'gain', 'learning_rate': 0.04347089639866006, 'max_depth': -1, 'min_child_samples': 460, 'min_child_weight': 0.0, 'min_split_gain': 0.0, 'n_estimators': 50000, 'n_jobs': None, 'num_leaves': 14, 'objective': None, 'random_state': args.random_state, 'reg_alpha': 400, 'reg_lambda': 500, 'subsample': 0.879814641620981, 'subsample_for_bin': 400000, 'subsample_freq': 5, 'device': 'cpu', 'verbose': 1, 'max_bin': 511, 'cat_l2': 450, 'cat_smooth': 150,"deterministic":True,"force_col_wise":True}
 #    model_params = {'boosting_type': 'gbdt', 'class_weight': None, 'colsample_bytree': 0.9983479969770903, 'importance_type': 'gain', 'learning_rate': 0.034044216343711194, 'max_depth': -1, 'min_child_samples': 360, 'min_child_weight': 0.0, 'min_split_gain': 0.0, 'n_estimators': 50000, 'n_jobs': None, 'num_leaves': 17, 'objective': None, 'random_state': 0, 'reg_alpha': 300, 'reg_lambda': 800, 'subsample': 0.9708398642260044, 'subsample_for_bin': 400000, 'subsample_freq': 100, 'device': 'cpu', 'verbose': 1, 'max_bin': 1023, 'cat_l2': 50, 'cat_smooth': 150}#, 'test_error': 1572.2932228357363}
@@ -196,6 +279,8 @@ def main():
             model_params[k]=v
         else:
             raise Exception(f"unknown args '-{k} {v}'")
+    if args.what in EXT_MODES:
+        return run_ext(args, model_params, config)
     predictor = Predictor(MassOewMtow(YVAR,"aircraft_type"),model_params)
     predictor.fit(feat)
     ypred = predictor.predict(feat.data)
