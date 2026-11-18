@@ -9,7 +9,10 @@ KTS2MS = NM2METER/3600.
 
 def read_config():
     ''' read config to get folders '''
-    with open("CONFIG","r") as f:
+    # Koopmann-Aziz: the config file can be chosen with the environment
+    # variable LJ_CONFIG (machine-specific config files live in
+    # koopmann_aziz/config/). Unset -> the team's original "CONFIG".
+    with open(os.environ.get("LJ_CONFIG", "CONFIG"),"r") as f:
         l = [[x.strip() for x in line.split("=")] for line in f if len(line.strip())>0 and line.strip()[0]!="#"]
         d = {k:v for k,v in l}
     for subfolder in ["trajectories","flights","flightsparquet","METARs"]:

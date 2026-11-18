@@ -1,0 +1,10 @@
+# pc182 config, selected with the environment variable LJ_CONFIG
+# (koopmann_aziz/run/*.ps1 set it). Keys used by the team code:
+FOLDER_DATA = E:/Koopmann-Aziz/data/prc2024/lj
+# the team's "-what submit" mode writes here: kept inside ext so that the
+# reproduction folder E:/Koopmann-Aziz/data/prc2024/lj/submissions is never touched
+SUBMISSIONS_FOLDER = E:/Koopmann-Aziz/results/prc2024/likable_jelly/ext/submissions_team_format
+JSON = E:/Koopmann-Aziz/results/prc2024/likable_jelly/ext/no_team_json.json
+# Keys used by the koopmann_aziz extension:
+EXT_FOLDER = E:/Koopmann-Aziz/results/prc2024/likable_jelly/ext
+TEMP_FOLDER = E:/Koopmann-Aziz/tmp/Koopmann-Aziz-lj24-ext

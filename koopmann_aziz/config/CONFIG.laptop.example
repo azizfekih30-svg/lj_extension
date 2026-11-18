@@ -1,0 +1,7 @@
+# laptop config: written by  python -m koopmann_aziz.synth --out <dir> --write-config
+# (git-ignored as CONFIG.laptop). Points everything at the synthetic data folder.
+FOLDER_DATA = C:/path/to/koopmann_aziz/_synth/lj
+SUBMISSIONS_FOLDER = C:/path/to/koopmann_aziz/_synth/ext/submissions_team_format
+JSON = C:/path/to/koopmann_aziz/_synth/ext/no_team_json.json
+EXT_FOLDER = C:/path/to/koopmann_aziz/_synth/ext
+TEMP_FOLDER = C:/path/to/koopmann_aziz/_synth/tmp
